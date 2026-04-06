@@ -1,0 +1,239 @@
+-- ============================================
+-- REAL ESTATE DATA INTELLIGENCE SYSTEM (FINAL)
+-- ============================================
+
+CREATE DATABASE IF NOT EXISTS real_estate_pro;
+USE real_estate_pro;
+
+-- ---------------- USERS ----------------
+-- Stores all users (admin, agent, owner, buyer)
+CREATE TABLE Users (
+UserID BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+FullName VARCHAR(100) NOT NULL,
+Email VARCHAR(100) UNIQUE NOT NULL,
+Phone VARCHAR(20),
+Role ENUM('ADMIN','AGENT','OWNER','BUYER') NOT NULL,
+CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ---------------- PROPERTIES ----------------
+-- Stores property listings
+CREATE TABLE Properties (
+PropertyID BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+Title VARCHAR(150) NOT NULL,
+Description TEXT,
+City VARCHAR(100) NOT NULL,
+State VARCHAR(100),
+Price DECIMAL(12,2) NOT NULL CHECK (Price > 0),
+Status ENUM('AVAILABLE','UNDER_CONTRACT','SOLD') DEFAULT 'AVAILABLE',
+OwnerID BIGINT UNSIGNED NOT NULL,
+ListedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+FOREIGN KEY (OwnerID) REFERENCES Users(UserID)
+);
+
+-- ---------------- PROPERTY FEATURES ----------------
+CREATE TABLE PropertyFeatures (
+FeatureID BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+PropertyID BIGINT UNSIGNED NOT NULL,
+Bedrooms INT,
+Bathrooms INT,
+SquareFeet INT,
+Garage BOOLEAN DEFAULT FALSE,
+Garden BOOLEAN DEFAULT FALSE,
+FOREIGN KEY (PropertyID) REFERENCES Properties(PropertyID)
+);
+
+-- ---------------- LEADS ----------------
+-- Tracks interested buyers (CRM pipeline)
+CREATE TABLE Leads (
+LeadID BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+PropertyID BIGINT UNSIGNED NOT NULL,
+BuyerID BIGINT UNSIGNED NOT NULL,
+AgentID BIGINT UNSIGNED NOT NULL,
+Status ENUM('NEW','CONTACTED','VISITED','OFFER_MADE','CLOSED','LOST') DEFAULT 'NEW',
+CreatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+FOREIGN KEY (PropertyID) REFERENCES Properties(PropertyID),
+FOREIGN KEY (BuyerID) REFERENCES Users(UserID),
+FOREIGN KEY (AgentID) REFERENCES Users(UserID)
+);
+
+-- ---------------- TRANSACTIONS ----------------
+-- Stores property sales
+CREATE TABLE Transactions (
+TransactionID BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+PropertyID BIGINT UNSIGNED NOT NULL UNIQUE,
+BuyerID BIGINT UNSIGNED NOT NULL,
+TotalAmount DECIMAL(12,2) NOT NULL CHECK (TotalAmount > 0),
+TransactionDate TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+FOREIGN KEY (PropertyID) REFERENCES Properties(PropertyID),
+FOREIGN KEY (BuyerID) REFERENCES Users(UserID)
+);
+
+-- ---------------- PAYMENTS ----------------
+CREATE TABLE Payments (
+PaymentID BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+TransactionID BIGINT UNSIGNED NOT NULL,
+Amount DECIMAL(12,2) NOT NULL CHECK (Amount > 0),
+PaymentDate TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+Mode ENUM('CASH','CARD','TRANSFER') NOT NULL,
+FOREIGN KEY (TransactionID) REFERENCES Transactions(TransactionID)
+);
+
+-- ---------------- FAVORITES ----------------
+-- Tracks user interest
+CREATE TABLE Favorites (
+UserID BIGINT UNSIGNED,
+PropertyID BIGINT UNSIGNED,
+AddedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+PRIMARY KEY (UserID, PropertyID),
+FOREIGN KEY (UserID) REFERENCES Users(UserID),
+FOREIGN KEY (PropertyID) REFERENCES Properties(PropertyID)
+);
+
+-- ---------------- AUDIT LOG ----------------
+-- Tracks all important actions
+CREATE TABLE AuditLog (
+LogID BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+TableName VARCHAR(100),
+OperationType ENUM('INSERT','UPDATE','DELETE'),
+RecordID BIGINT UNSIGNED,
+UserID BIGINT UNSIGNED,
+Timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+Description TEXT
+);
+
+-- ---------------- SAMPLE DATA ----------------
+INSERT INTO Users (FullName, Email, Role) VALUES
+('Admin One','[admin@example.com](mailto:admin@example.com)','ADMIN'),
+('Agent Mike','[mike@agency.com](mailto:mike@agency.com)','AGENT'),
+('Owner Olivia','[olivia@homes.com](mailto:olivia@homes.com)','OWNER'),
+('Buyer Ben','[ben@client.com](mailto:ben@client.com)','BUYER'),
+('Buyer Sara','[sara@client.com](mailto:sara@client.com)','BUYER');
+
+INSERT INTO Properties (Title, City, State, Price, OwnerID) VALUES
+('Luxury Villa','Miami','FL',1250000,3),
+('Downtown Condo','New York','NY',850000,3),
+('Beach Apartment','Los Angeles','CA',650000,3),
+('Suburban House','Austin','TX',480000,3),
+('Lakeview Cabin','Denver','CO',550000,3);
+
+INSERT INTO PropertyFeatures VALUES
+(NULL,1,5,4,4000,TRUE,TRUE),
+(NULL,2,3,2,1800,FALSE,FALSE),
+(NULL,3,2,2,1200,TRUE,FALSE),
+(NULL,4,4,3,2400,TRUE,TRUE),
+(NULL,5,3,2,2000,FALSE,TRUE);
+
+INSERT INTO Leads (PropertyID,BuyerID,AgentID,Status) VALUES
+(1,4,2,'NEW'),
+(2,5,2,'VISITED'),
+(3,4,2,'OFFER_MADE');
+
+-- ---------------- TRIGGERS ----------------
+DELIMITER //
+
+CREATE TRIGGER trg_property_sold
+AFTER INSERT ON Transactions
+FOR EACH ROW
+BEGIN
+UPDATE Properties
+SET Status='SOLD'
+WHERE PropertyID = NEW.PropertyID;
+
+```
+INSERT INTO AuditLog(TableName, OperationType, RecordID, Description)
+VALUES ('Properties','UPDATE',NEW.PropertyID,'Property marked as SOLD');
+```
+
+END //
+
+CREATE TRIGGER trg_check_payment
+BEFORE INSERT ON Payments
+FOR EACH ROW
+BEGIN
+IF NEW.Amount <= 0 THEN
+SIGNAL SQLSTATE '45000'
+SET MESSAGE_TEXT = 'Invalid payment amount';
+END IF;
+END //
+
+DELIMITER ;
+
+-- ---------------- STORED PROCEDURES ----------------
+DELIMITER //
+
+-- Property recommendation
+CREATE PROCEDURE RecommendProperties(
+IN p_city VARCHAR(100),
+IN p_budget DECIMAL(12,2)
+)
+BEGIN
+SELECT PropertyID, Title, City, Price
+FROM Properties
+WHERE City = p_city AND Price <= p_budget AND Status='AVAILABLE';
+END //
+
+-- Execute transaction (ACID)
+CREATE PROCEDURE ExecuteTransaction(
+IN p_property_id BIGINT UNSIGNED,
+IN p_buyer_id BIGINT UNSIGNED,
+IN p_total DECIMAL(12,2),
+IN p_payment_mode VARCHAR(20)
+)
+BEGIN
+START TRANSACTION;
+
+```
+INSERT INTO Transactions(PropertyID, BuyerID, TotalAmount)
+VALUES (p_property_id, p_buyer_id, p_total);
+
+INSERT INTO Payments(TransactionID, Amount, Mode)
+VALUES (LAST_INSERT_ID(), p_total, p_payment_mode);
+
+COMMIT;
+```
+
+END //
+
+-- Lead update with validation
+CREATE PROCEDURE UpdateLeadStatus(
+IN p_lead_id BIGINT UNSIGNED,
+IN p_status VARCHAR(20)
+)
+BEGIN
+IF p_status NOT IN ('NEW','CONTACTED','VISITED','OFFER_MADE','CLOSED','LOST') THEN
+SIGNAL SQLSTATE '45000'
+SET MESSAGE_TEXT = 'Invalid Lead Status';
+END IF;
+
+```
+UPDATE Leads SET Status = p_status WHERE LeadID = p_lead_id;
+
+INSERT INTO AuditLog(TableName, OperationType, RecordID, Description)
+VALUES ('Leads','UPDATE',p_lead_id, CONCAT('Status updated to ', p_status));
+```
+
+END //
+
+DELIMITER ;
+
+-- ---------------- VIEWS ----------------
+CREATE VIEW vw_RevenueByCity AS
+SELECT P.City, SUM(T.TotalAmount) AS TotalRevenue
+FROM Transactions T
+JOIN Properties P ON T.PropertyID = P.PropertyID
+GROUP BY P.City;
+
+CREATE VIEW vw_LeadConversion AS
+SELECT Status, COUNT(*) AS Count FROM Leads GROUP BY Status;
+
+CREATE VIEW vw_AvailableProperties AS
+SELECT PropertyID, Title, City, Price
+FROM Properties WHERE Status='AVAILABLE';
+
+-- ---------------- ANALYTICS ----------------
+SELECT * FROM vw_RevenueByCity;
+
+SELECT
+ROUND(COUNT(CASE WHEN Status='CLOSED' THEN 1 END)*100.0/COUNT(*),2)
+AS ConversionRate FROM Leads;
